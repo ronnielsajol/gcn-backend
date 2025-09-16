@@ -15,11 +15,10 @@ return new class extends Migration
             $table->id();
 
             // Basic user info (from users table)
-            $table->string('first_name');
-            $table->string('last_name');
+            $table->string('first_name')->nullable();
+            $table->string('last_name')->nullable();
             $table->string('middle_initial', 10)->nullable();
-            $table->string('contact_number')->nullable();
-            $table->string('email')->unique();
+            $table->string('email')->nullable();
             $table->string('profile_image')->nullable();
             $table->enum('role', ['super_admin', 'admin', 'user'])->default('user');
             $table->timestamp('email_verified_at')->nullable();
@@ -27,9 +26,9 @@ return new class extends Migration
             $table->boolean('is_active')->default(true);
             $table->rememberToken();
 
-            // Additional registration info
+            // Additional registration info (from registrations table)
             $table->string('title')->nullable();
-            $table->string('mobile_number', 20)->nullable();
+            $table->string('mobile_number', 50)->nullable();
 
             // Address / church
             $table->text('home_address')->nullable();
@@ -44,7 +43,6 @@ return new class extends Migration
 
             // Payment
             $table->enum('mode_of_payment', ['gcash', 'bank', 'cash', 'other'])->nullable();
-            $table->string('proof_of_payment_path')->nullable();
             $table->text('proof_of_payment_url')->nullable();
             $table->text('notes')->nullable();
 
@@ -54,8 +52,8 @@ return new class extends Migration
 
             // Flags / statuses
             $table->boolean('reconciled')->default(false);
-            $table->boolean('finance_checked')->default(false);
-            $table->boolean('email_confirmed')->default(false);
+            $table->boolean('finance_checked')->default(false); // Victory Pampanga Finance / Ms. Abbey
+            $table->boolean('email_confirmed')->default(false); // TN Secretariat
             $table->boolean('attendance')->default(false);
             $table->boolean('id_issued')->default(false);
             $table->boolean('book_given')->default(false);

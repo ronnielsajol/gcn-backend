@@ -18,13 +18,13 @@ class DatabaseSeeder extends Seeder
         $this->call(UserSeeder::class);
         $this->call(SpheresTableSeeder::class);
 
-        $regularUsers = User::where('role', 'user')->get();
+        // $regularUsers = User::where('role', 'user')->get();
 
-        if ($regularUsers->isNotEmpty()) {
-            Event::factory(5)->afterCreating(function (Event $event) use ($regularUsers) {
-                $attendees = $regularUsers->random(rand(5, 10));
-                $event->users()->attach($attendees);
-            })->create();
-        }
+        // if ($regularUsers->isNotEmpty()) {
+        //     Event::factory(5)->afterCreating(function (Event $event) use ($regularUsers) {
+        //         $attendees = $regularUsers->random(rand(5, 10));
+        //         $event->users()->attach($attendees);
+        //     })->create();
+        // }
     }
 }

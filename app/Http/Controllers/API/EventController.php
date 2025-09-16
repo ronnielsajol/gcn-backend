@@ -23,10 +23,28 @@ class EventController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
+        // Get pagination parameters
+        $perPage = $request->get('per_page', 15);
+        $userPerPage = $request->get('user_per_page', 5); // Limit users per event in listing
+
         // Eager load relationships to prevent N+1 query issues
-        $events = Event::with(['createdBy:id,first_name,last_name', 'users:id,first_name,last_name,email,profile_image'])->paginate(15);
+        $events = Event::with(['createdBy:id,first_name,last_name'])
+            ->paginate($perPage);
+
+        // Load a limited number of users for each event in the listing
+        $events->getCollection()->transform(function ($event) use ($userPerPage) {
+            $event->load(['users' => function ($query) use ($userPerPage) {
+                $query->select('users.id', 'users.first_name', 'users.last_name', 'users.email', 'users.profile_image')
+                    ->limit($userPerPage);
+            }]);
+
+            // Add user count for reference
+            $event->users_count = $event->users()->count();
+
+            return $event;
+        });
 
         return response()->json($events);
     }
@@ -63,11 +81,25 @@ class EventController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show(Event $event)
+    public function show(Request $request, Event $event)
     {
-        // Load the relationships for the single event
-        $event->load(['createdBy:id,first_name,last_name', 'users:id,first_name,last_name,email,gender,profile_image']);
-        return response()->json($event);
+        // Get pagination parameters
+        $perPage = $request->get('per_page', 20);
+        $page = $request->get('page', 1);
+
+        // Load the createdBy relationship
+        $event->load(['createdBy:id,first_name,last_name']);
+
+        // Get paginated users that are registered to this specific event
+        $users = $event->users()
+            ->select('users.id', 'users.first_name', 'users.last_name', 'users.email', 'users.profile_image')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        // Convert event to array and add paginated users
+        $eventData = $event->toArray();
+        $eventData['users'] = $users;
+
+        return response()->json($eventData);
     }
 
     /**

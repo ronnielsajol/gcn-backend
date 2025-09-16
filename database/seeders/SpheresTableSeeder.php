@@ -14,13 +14,13 @@ class SpheresTableSeeder extends Seeder
     public function run(): void
     {
         $spheres = [
-            'Church/Ministry',
-            'Family/Community',
-            'Government',
-            'Education',
-            'Business/Economics',
-            'Media/Arts/Entertainment',
-            'Every Nation Campus (ENC)'
+            'Church/ministry',
+            'Family/community',
+            'Government/law',
+            'Education/sports',
+            'Business/economics',
+            'Media/arts/entertainment',
+            'Medicine/science/technology',
         ];
 
         foreach ($spheres as $sphere) {

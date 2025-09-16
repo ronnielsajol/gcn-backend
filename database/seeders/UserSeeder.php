@@ -16,10 +16,6 @@ class UserSeeder extends Seeder
             'email' => 'superadmin@test.com',
             'password' => Hash::make('12301230'),
             'role' => 'super_admin',
-            'address' => '123 Admin Street',
-            'gender' => 'male',
-            'religion' => 'Christian',
-            'contact_number' => '+1234567890',
         ]);
 
         User::create([
@@ -28,10 +24,6 @@ class UserSeeder extends Seeder
             'email' => 'admin@test.com',
             'password' => Hash::make('12301230'),
             'role' => 'admin',
-            'address' => '456 Admin Avenue',
-            'gender' => 'female',
-            'religion' => 'Catholic',
-            'contact_number' => '+0987654321',
         ]);
     }
 }

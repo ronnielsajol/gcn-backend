@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\API;
+namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\FilterSortTrait;
@@ -20,8 +20,8 @@ class UserController extends Controller
     use AuthorizesRequests, FilterSortTrait;
     protected ActivityLogService $activityLogService;
 
-    protected array $searchableFields = ['first_name', 'last_name', 'email', 'contact_number'];
-    protected array $filterableFields = ['role', 'gender', 'religion'];
+    protected array $searchableFields = ['first_name', 'last_name', 'email'];
+    protected array $filterableFields = ['role'];
     protected array $sortableFields = [
         'id',
         'first_name',
@@ -44,7 +44,16 @@ class UserController extends Controller
         $this->authorize('viewAny', User::class);
         $query = User::with('userFiles')->where('role', 'user');
 
-        $this->applyFilters($query, $request, $this->searchableFields, $this->filterableFields);
+        // Apply search and basic filters
+        $this->applyFilters($query, $request, $this->searchableFields, array_diff($this->filterableFields, ['sphere']));
+
+        // Handle sphere filtering separately
+        if ($request->filled('sphere_id')) {
+            $query->whereHas('spheres', function ($q) use ($request) {
+                $q->where('spheres.id', $request->sphere_id);
+            });
+        }
+
         $this->applySorting($query, $request, $this->sortableFields);
 
         return response()->json($query->paginate($this->getPerPageLimit($request)));

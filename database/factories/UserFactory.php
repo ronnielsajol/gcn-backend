@@ -23,18 +23,33 @@ class UserFactory extends Factory
      */
     public function definition(): array
     {
-        // Added definitions for all the required fields in the users table.
         return [
             'first_name' => fake()->firstName(),
             'last_name' => fake()->lastName(),
+            'middle_initial' => fake()->optional()->randomLetter(),
             'email' => fake()->unique()->safeEmail(),
-            'address' => fake()->streetAddress() . ', Pasig City, Metro Manila',
-            'gender' => fake()->randomElement(['male', 'female', 'other']),
-            'religion' => fake()->randomElement(['Roman Catholic', 'Muslim', 'Iglesia ni Cristo', 'Christian']),
             'contact_number' => fake()->numerify('+639#########'),
-            'role' => 'user', // Default role for factory-created users
+            'mobile_number' => fake()->numerify('+639#########'),
+            'role' => 'user',
             'email_verified_at' => now(),
             'is_active' => true,
+            'title' => fake()->optional()->randomElement(['Mr.', 'Ms.', 'Mrs.', 'Dr.', 'Rev.']),
+            'home_address' => fake()->address(),
+            'church_name' => fake()->optional()->company() . ' Church',
+            'church_address' => fake()->optional()->address(),
+            'working_or_student' => fake()->randomElement(['working', 'student']),
+            'vocation_work_sphere' => fake()->optional()->jobTitle(),
+            'mode_of_payment' => fake()->optional()->randomElement(['gcash', 'bank', 'cash', 'other']),
+            'proof_of_payment_path' => fake()->optional()->filePath(),
+            'proof_of_payment_url' => fake()->optional()->url(),
+            'notes' => fake()->optional()->sentence(),
+            'reference_number' => fake()->optional()->numerify('REF-#####'),
+            'reconciled' => fake()->boolean(20), // 20% chance of being true
+            'finance_checked' => fake()->boolean(30),
+            'email_confirmed' => fake()->boolean(70),
+            'attendance' => fake()->boolean(40),
+            'id_issued' => fake()->boolean(50),
+            'book_given' => fake()->boolean(45),
             'remember_token' => Str::random(10),
         ];
     }

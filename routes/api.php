@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\API\UserController;
 use App\Http\Controllers\API\UserFileController;
 use App\Http\Controllers\API\ActivityLogController;
+use App\Http\Controllers\Api\StatsController;
 use Illuminate\Support\Facades\Route;
 
 // Authentication routes
@@ -59,6 +60,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Export specific user's detailed info
     Route::get('/users/{id}/export/csv', [UserController::class, 'exportUserInfo'])
         ->name('users.export.csv.info');
+
+    // Stats routes
+    Route::get('/stats/events/{event}/sphere-stats', [StatsController::class, 'getSphereStatsPerEvent'])->name('stats.events.spheres');
 });
 
 // Apply role-based restrictions

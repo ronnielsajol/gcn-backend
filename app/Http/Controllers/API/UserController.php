@@ -49,9 +49,20 @@ class UserController extends Controller
 
         // Handle sphere filtering separately
         if ($request->filled('sphere_id')) {
-            $query->whereHas('spheres', function ($q) use ($request) {
-                $q->where('spheres.id', $request->sphere_id);
-            });
+            $sphereId = $request->sphere_id;
+
+            if ($sphereId == 0) {
+                $query->whereDoesntHave('spheres');
+            } else {
+                $query->whereHas('spheres', function ($q) use ($sphereId) {
+                    $q->where('spheres.id', $sphereId);
+                });
+            }
+        }
+
+        // Handle filtering for users with no spheres (alternative method)
+        if ($request->filled('no_sphere') && $request->boolean('no_sphere')) {
+            $query->whereDoesntHave('spheres');
         }
 
         $this->applySorting($query, $request, $this->sortableFields);

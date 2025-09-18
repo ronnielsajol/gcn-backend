@@ -95,9 +95,16 @@ class EventController extends Controller
             ->select('users.id', 'users.first_name', 'users.last_name', 'users.email', 'users.profile_image')
             ->paginate($perPage, ['*'], 'page', $page);
 
-        // Convert event to array and add paginated users
+        // Get count of users who attended (attendance = 1)
+        $attendedCount = $event->users()
+            ->where('role', 'user')
+            ->where('attendance', 1)
+            ->count();
+
+        // Convert event to array and add paginated users and attendance count
         $eventData = $event->toArray();
         $eventData['users'] = $users;
+        $eventData['attended_count'] = $attendedCount;
 
         return response()->json($eventData);
     }
@@ -317,10 +324,18 @@ class EventController extends Controller
      */
     public function exportEventAttendees(Request $request, $eventId)
     {
-
         $event = Event::with(['users' => function ($query) {
-            $query->select('users.id', 'first_name', 'last_name', 'email', 'contact_number', 'gender', 'religion')
-                ->where('role', 'user');
+            $query->select(
+                'users.id',
+                'first_name',
+                'last_name',
+                'email',
+                'mobile_number',
+                'church_name',
+                'home_address',
+                'working_or_student',
+                'vocation_work_sphere'
+            )->where('role', 'user')->with('spheres:id,name');
         }])->findOrFail($eventId);
 
         // Prepare CSV headers
@@ -350,20 +365,27 @@ class EventController extends Controller
                 'First Name',
                 'Last Name',
                 'Email',
-                'Contact Number',
-                'Gender',
-                'Religion'
+                'Mobile Number',
+                'Church Name',
+                'Home Address',
+                'Working/Student Status',
+                'Spheres'
             ]);
 
             foreach ($event->users as $user) {
+                // Get sphere names as comma-separated string
+                $sphereNames = $user->spheres->pluck('name')->join(', ');
+
                 fputcsv($file, [
                     $user->id,
                     $user->first_name,
                     $user->last_name,
                     $user->email,
-                    "'" . $user->contact_number,
-                    ucfirst($user->gender),
-                    $user->religion
+                    $user->mobile_number,
+                    $user->church_name,
+                    $user->home_address,
+                    $user->working_or_student,
+                    $sphereNames ?: 'No Spheres'
                 ]);
             }
 

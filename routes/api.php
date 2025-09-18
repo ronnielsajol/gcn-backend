@@ -3,9 +3,9 @@
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EventController;
-use App\Http\Controllers\API\UserController;
-use App\Http\Controllers\API\UserFileController;
-use App\Http\Controllers\API\ActivityLogController;
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\UserFileController;
+use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\StatsController;
 use Illuminate\Support\Facades\Route;
 

@@ -1,7 +1,7 @@
 <?php
 
-use App\Http\Controllers\API\AdminController;
-use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\API\UserController;
 use App\Http\Controllers\API\UserFileController;

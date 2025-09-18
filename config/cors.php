@@ -21,6 +21,7 @@ return [
 
     'allowed_origins' => [
         'http://localhost:3000',
+        'https://tn.asc-nest.org'
     ],
 
     'allowed_origins_patterns' => [],

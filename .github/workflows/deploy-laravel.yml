@@ -1,0 +1,74 @@
+name: Deploy (Server git pull on GoDaddy)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Use the SSH key that lets Actions log into your GoDaddy box
+      - name: Start ssh-agent & add key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+
+      - name: Trust host
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy via git pull
+        env:
+          PHP_BIN: ${{ secrets.PHP_BIN }} # e.g. /usr/local/bin/php
+        run: |
+          ssh ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
+          set -e
+          cd "${PROD_REMOTE_PATH:-${{ secrets.PROD_REMOTE_PATH }}}"
+
+          # One-time bootstrap: clone if repo not present
+          if [ ! -d .git ]; then
+            # IMPORTANT: Server must have its own SSH key added as a Deploy Key on GitHub
+            git clone --branch main git@github.com:ronnielsajol/gcn-backend.git .
+          fi
+
+          # Pull latest from main
+          git fetch origin main
+          git reset --hard origin/main
+
+          # Ensure .env exists on the server (never ship secrets from CI)
+          if [ ! -f .env ]; then
+            echo "ERROR: .env missing on server"; exit 1
+          fi
+
+          # If you have composer.phar in project/home, use it; otherwise skip
+          if [ -f composer.phar ]; then
+            ${PHP_BIN:-/usr/local/bin/php} composer.phar install --no-dev --prefer-dist --optimize-autoloader
+          elif command -v composer >/dev/null 2>&1; then
+            composer install --no-dev --prefer-dist --optimize-autoloader
+          else
+            echo "composer not found — skipping vendor install"
+          fi
+
+          # (Optional) Node build if you keep assets on the server
+          if [ -f package.json ]; then
+            if command -v npm >/dev/null 2>&1; then
+              npm ci || npm install
+              npm run build || npm run prod || true
+            fi
+          fi
+
+          # Laravel: storage link (idempotent), perms, migrate, caches
+          ${PHP_BIN:-/usr/local/bin/php} artisan storage:link || true
+          chmod -R 775 storage bootstrap/cache || true
+          find storage -type d -exec chmod 775 {} \; || true
+          find storage -type f -exec chmod 664 {} \; || true
+
+          ${PHP_BIN:-/usr/local/bin/php} artisan migrate --force
+          ${PHP_BIN:-/usr/local/bin/php} artisan config:cache
+          ${PHP_BIN:-/usr/local/bin/php} artisan route:cache
+          ${PHP_BIN:-/usr/local/bin/php} artisan queue:restart || true
+          EOF

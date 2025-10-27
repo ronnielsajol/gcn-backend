@@ -32,7 +32,6 @@ class UserController extends Controller
         'role',
         'created_at',
         'updated_at',
-        'contact_number'
     ];
     public function __construct(ActivityLogService $activityLogService)
     {

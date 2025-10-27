@@ -22,7 +22,7 @@ class EventController extends Controller
     protected ActivityLogService $activityLogService;
 
     // Define searchable fields for users within events
-    protected array $userSearchableFields = ['first_name', 'last_name', 'email', 'contact_number'];
+    protected array $userSearchableFields = ['first_name', 'last_name', 'email', 'mobile_number'];
     protected array $userFilterableFields = ['gender', 'religion'];
     protected array $userSortableFields = [
         'id',
@@ -31,7 +31,7 @@ class EventController extends Controller
         'email',
         'gender',
         'religion',
-        'contact_number'
+        'mobile_number'
     ];
 
     public function __construct(ActivityLogService $activityLogService)
@@ -508,7 +508,7 @@ class EventController extends Controller
             $attendees = User::whereHas('events', function ($query) use ($event) {
                 $query->where('events.id', $event->id);
             })
-                ->select('id', 'first_name', 'last_name', 'email', 'contact_number', 'gender', 'religion', 'address', 'profile_image')
+                ->select('id', 'first_name', 'last_name', 'email', 'mobile_number', 'gender', 'religion', 'home_address', 'profile_image')
                 ->get();
 
             Log::info("PDF Export Started", [

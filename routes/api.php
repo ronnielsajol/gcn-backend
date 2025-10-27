@@ -27,8 +27,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('admins/{id}', [AdminController::class, 'update'])->name('admins.update.post');
 
     Route::apiResource('/events', EventController::class);
+    Route::get('/events/{event}/users', [EventController::class, 'getEventUsers']);
+
     // Export event attendees (add this to your EventController routes)
     Route::get('/events/{event}/export/csv/attendees', [EventController::class, 'exportEventAttendees']);
+    Route::get('/events/{event}/export/pdf/attendees', [EventController::class, 'exportEventAttendeesPdf']);
+
 
     Route::patch('events/{event}/status', [EventController::class, 'updateStatus']);
 

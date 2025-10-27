@@ -6,14 +6,33 @@ use App\Http\Controllers\Controller;
 use App\Models\Event;
 use App\Http\Requests\StoreEventRequest;
 use App\Http\Requests\UpdateEventRequest;
+use App\Http\Traits\FilterSortTrait;
 use App\Models\ActivityLog;
+use App\Models\User;
 use App\Services\ActivityLogService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class EventController extends Controller
 {
+    use FilterSortTrait;
+
     protected ActivityLogService $activityLogService;
+
+    // Define searchable fields for users within events
+    protected array $userSearchableFields = ['first_name', 'last_name', 'email', 'contact_number'];
+    protected array $userFilterableFields = ['gender', 'religion'];
+    protected array $userSortableFields = [
+        'id',
+        'first_name',
+        'last_name',
+        'email',
+        'gender',
+        'religion',
+        'contact_number'
+    ];
 
     public function __construct(ActivityLogService $activityLogService)
     {
@@ -319,6 +338,78 @@ class EventController extends Controller
     }
 
     /**
+     * Get all users for a specific event
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $eventId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getEventUsers(Request $request, $eventId)
+    {
+        $event = Event::findOrFail($eventId);
+
+        // Basic authorization - only authenticated users
+        if (!$request->user()) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        // Create a proper query builder for users that belong to this event
+        $query = User::whereHas('events', function ($q) use ($eventId) {
+            $q->where('events.id', $eventId);
+        })
+            ->select('users.id', 'first_name', 'last_name', 'email')
+            ->where('role', 'user');
+
+        // Apply search, filter, and sort functionality
+        $this->applyFilters($query, $request, $this->userSearchableFields, $this->userFilterableFields);
+        $this->applySorting($query, $request, $this->userSortableFields, 'first_name'); // Default sort by first_name
+
+        // Get pagination parameters
+        $perPage = $this->getPerPageLimit($request);
+
+        // Apply pagination
+        $users = $query->paginate($perPage);
+
+        // Log the activity
+        $this->activityLogService->log(
+            $request->user(),
+            'viewed',
+            'Event',
+            $event->id,
+            null,
+            [
+                'action' => 'viewed_event_users',
+                'total_users' => $users->total(),
+                'search_query' => $request->get('search'),
+                'filters' => $request->only($this->userFilterableFields)
+            ],
+            $request
+        );
+
+        return response()->json([
+            'message' => "Users for event: {$event->name}",
+            'event' => [
+                'id' => $event->id,
+                'name' => $event->name,
+                'description' => $event->description,
+                'start_time' => $event->start_time,
+                'end_time' => $event->end_time,
+                'status' => $event->status,
+                'total_users' => $users->total(),
+            ],
+            'users' => $users,
+            'search_info' => [
+                'searchable_fields' => $this->userSearchableFields,
+                'filterable_fields' => $this->userFilterableFields,
+                'sortable_fields' => $this->userSortableFields
+            ]
+        ]);
+    }
+
+
+
+
+    /**
      * This method should go in your EventController
      * Export attendees of a specific event to CSV
      */
@@ -403,5 +494,86 @@ class EventController extends Controller
         );
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    public function exportEventAttendeesPdf(Event $event)
+    {
+        try {
+            // Significantly increase limits for large exports
+            ini_set('memory_limit', '2G');
+            ini_set('max_execution_time', 300); // 5 minutes
+            set_time_limit(300);
+
+            // Use efficient query to get only needed fields
+            $attendees = User::whereHas('events', function ($query) use ($event) {
+                $query->where('events.id', $event->id);
+            })
+                ->select('id', 'first_name', 'last_name', 'email', 'contact_number', 'gender', 'religion', 'address', 'profile_image')
+                ->get();
+
+            Log::info("PDF Export Started", [
+                'event_id' => $event->id,
+                'attendee_count' => $attendees->count(),
+                'memory_before' => memory_get_usage(true)
+            ]);
+
+            // For very large datasets (500+), consider chunked processing or pagination warning
+            if ($attendees->count() > 500) {
+                return response()->json([
+                    'error' => 'Too many attendees for single PDF export.',
+                    'attendee_count' => $attendees->count(),
+                    'suggestion' => 'Consider using CSV export for large datasets or contact administrator for batch processing.',
+                    'max_recommended' => 500
+                ], 422);
+            }
+
+            $pdf = Pdf::loadView('exports.event-attendees-pdf', [
+                'event' => $event,
+                'attendees' => $attendees,
+                'generated_at' => now()
+            ]);
+
+            // Ultra-optimized PDF settings for large documents
+            $pdf->setPaper('A4', 'portrait');
+            $pdf->setOptions([
+                'dpi' => 72, // Minimum DPI for faster processing
+                'defaultFont' => 'DejaVu Sans',
+                'isRemoteEnabled' => true, // Enable remote for images
+                'isHtml5ParserEnabled' => false, // Disable for speed
+                'isPhpEnabled' => true,
+                'chroot' => public_path(),
+                'debugKeepTemp' => false,
+                'debugPng' => false,
+                'debugLayout' => false,
+                'enablePhp' => true,
+                'enableJavascript' => false, // Disable JS
+                'enableRemote' => true, // Enable remote for images
+                'fontSubsetting' => false, // Disable font subsetting for speed
+            ]);
+
+            $filename = 'event-' . $event->id . '-attendees-' . now()->format('Y-m-d') . '.pdf';
+
+            Log::info("PDF Export Completed", [
+                'event_id' => $event->id,
+                'attendee_count' => $attendees->count(),
+                'memory_after' => memory_get_usage(true)
+            ]);
+
+            return $pdf->download($filename);
+        } catch (\Exception $e) {
+            Log::error('PDF Export Error: ' . $e->getMessage(), [
+                'event_id' => $event->id,
+                'attendee_count' => $attendees->count() ?? 0,
+                'memory_usage' => memory_get_usage(true),
+                'peak_memory' => memory_get_peak_usage(true),
+                'stack_trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'error' => 'Failed to generate PDF. Please try again or contact administrator.',
+                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+                'attendee_count' => $attendees->count() ?? 0
+            ], 500);
+        }
     }
 }

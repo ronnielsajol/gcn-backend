@@ -76,6 +76,11 @@ class User extends Authenticatable
         'needs_review' => 'boolean',
     ];
 
+    /**
+     * Temporary storage for event ID to check attendance
+     */
+    protected ?int $checkEventId = null;
+
     /* =========================
      | Relationships
      * ========================= */
@@ -128,6 +133,38 @@ class User extends Authenticatable
     public function getFullNameAttribute(): string
     {
         return trim("{$this->first_name} {$this->last_name}");
+    }
+
+    /**
+     * Check if user is an attendee of a specific event
+     *
+     * @return bool
+     */
+    public function getIsEventAttendeeAttribute(): bool
+    {
+        if ($this->checkEventId === null) {
+            return false;
+        }
+
+        return $this->events()->where('events.id', $this->checkEventId)->exists();
+    }
+
+    /**
+     * Set the event ID to check attendance for
+     *
+     * @param int|null $eventId
+     * @return self
+     */
+    public function setCheckEventId(?int $eventId): self
+    {
+        $this->checkEventId = $eventId;
+
+        // Dynamically add the attribute to appends if event ID is set
+        if ($eventId !== null && !in_array('is_event_attendee', $this->appends)) {
+            $this->appends[] = 'is_event_attendee';
+        }
+
+        return $this;
     }
 
     public function isSuperAdmin()

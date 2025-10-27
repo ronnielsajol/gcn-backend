@@ -18,6 +18,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
 
     // User management routes
+    // Note: These routes support ?event_id=X query parameter to include is_event_attendee attribute
+    // Example: GET /api/users?event_id=1 or GET /api/users/5?event_id=1
     Route::apiResource('users', UserController::class);
     Route::get('/users/{user}/events', [UserController::class, 'getUserEvents']);
 

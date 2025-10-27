@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ChecksEventAttendance;
 use App\Http\Traits\FilterSortTrait;
 use App\Models\Event;
 use App\Models\User;
@@ -17,7 +18,7 @@ use Illuminate\Support\Str;
 
 class UserController extends Controller
 {
-    use AuthorizesRequests, FilterSortTrait;
+    use AuthorizesRequests, ChecksEventAttendance, FilterSortTrait;
     protected ActivityLogService $activityLogService;
 
     protected array $searchableFields = ['first_name', 'last_name', 'email'];
@@ -66,7 +67,14 @@ class UserController extends Controller
 
         $this->applySorting($query, $request, $this->sortableFields);
 
-        return response()->json($query->paginate($this->getPerPageLimit($request)));
+        $users = $query->paginate($this->getPerPageLimit($request));
+
+        // Add event attendance check if event_id is provided in request
+        if ($request->filled('event_id')) {
+            $this->withEventAttendanceCheck($users, (int) $request->event_id);
+        }
+
+        return response()->json($users);
     }
 
     public function store(Request $request)
@@ -128,10 +136,16 @@ class UserController extends Controller
         return response()->json($user->load('userFiles'), 201);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
         $user = User::with('userFiles')->findOrFail($id);
         $this->authorize('view', $user);
+
+        // Add event attendance check if event_id is provided in request
+        if ($request->filled('event_id')) {
+            $this->withEventAttendanceCheck($user, (int) $request->event_id);
+        }
+
         return response()->json($user);
     }
 

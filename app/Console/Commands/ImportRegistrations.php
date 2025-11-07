@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\User;
 use App\Models\Group;
 use App\Models\Sphere;
+use App\Models\Event;
 use Illuminate\Console\Command;
 use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -12,11 +13,16 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 class ImportRegistrations extends Command
 {
     protected $signature = 'import:registrations
-        {path? : Excel path under storage/app/imports (default: 3.0_REG FILE_May 25, 2024_CLARK.xlsx)}
+        {path? : Excel filename or path (can be relative to storage/app/imports/ or full path)}
         {--sheet=FINAL CLARK REGISTRATION_2024 : Sheet name (trailing space tolerated)}
+        {--header-row=2 : Row number where headers are located (default: 2)}
+        {--start-col=A : Starting column letter for headers/data (default: A)}
+        {--end-col=Z : Ending column letter for headers/data (default: Z)}
         {--start-row= : Start importing at this 1-based sheet row (data rows start at 3)}
         {--resume : Continue from the last imported row in users for this sheet}
-        {--skip-existing : Skip rows already imported for this sheet (by source_row)}';
+        {--skip-existing : Skip rows already imported for this sheet (by source_row)}
+        {--event-id= : Event ID to attach imported registrants as attendees}
+        {--dry-run : Preview what would be imported without actually saving to database}';
 
     protected $description = 'Insert every row from the Excel into users; store Google Drive link only (no downloads).';
 
@@ -35,7 +41,7 @@ class ImportRegistrations extends Command
         'name of church where you attend' => 'church_name',
         'church address (city/town/province [e.g. taguig city])' => 'church_address',
         'working or student' => 'working_or_student',
-        'vocation/work sphere (check all that apply)' => 'spheres_raw', // multi-select cell
+        'vocation/work sphere' => 'spheres_raw', // multi-select cell
         'mode of payment' => 'mode_of_payment',
         'proof of payment (please upload a clear photo of your deposit slip)' => 'proof_of_payment_url',
         'notes' => 'notes',
@@ -53,8 +59,37 @@ class ImportRegistrations extends Command
     {
         $fileRelative  = $this->argument('path') ?? '3.0_REG FILE_May 25, 2024_CLARK.xlsx';
         $wantedSheet   = $this->option('sheet');
+        $eventId       = $this->option('event-id');
 
-        $filePath = storage_path("app/imports/{$fileRelative}");
+        // Validate event if event-id is provided
+        $event = null;
+        if ($eventId) {
+            $event = Event::find($eventId);
+            if (!$event) {
+                $this->error("Event with ID {$eventId} not found.");
+                return self::FAILURE;
+            }
+            $this->info("Registrants will be attached to event: {$event->name} (ID: {$event->id})");
+        }
+
+        // Handle both relative and absolute paths
+        // If path starts with 'storage/app/' or contains full path, use it directly
+        // Otherwise, prepend 'app/imports/'
+        if (str_starts_with($fileRelative, 'storage/app/')) {
+            // Remove 'storage/app/' prefix since storage_path() adds it
+            $fileRelative = substr($fileRelative, strlen('storage/app/'));
+            $filePath = storage_path("app/{$fileRelative}");
+        } elseif (str_starts_with($fileRelative, 'app/')) {
+            // Already has 'app/' prefix
+            $filePath = storage_path($fileRelative);
+        } elseif (file_exists($fileRelative)) {
+            // Absolute path provided and exists
+            $filePath = $fileRelative;
+        } else {
+            // Relative path, assume it's in imports directory
+            $filePath = storage_path("app/imports/{$fileRelative}");
+        }
+
         if (!file_exists($filePath)) {
             $this->error("Excel not found: {$filePath}");
             return self::FAILURE;
@@ -69,11 +104,13 @@ class ImportRegistrations extends Command
         }
         $sheet = $spreadsheet->getSheetByName($realName);
 
-        // headers in B2:Y2, data starts at row 3
-        $headerRow    = 2;
-        $startCol     = 'B';
-        $endCol       = 'Y';
+        // headers in B2:Y2 by default, data starts at row 3 (or headerRow + 1)
+        $headerRow    = (int)($this->option('header-row') ?? 2);
+        $startCol     = strtoupper($this->option('start-col') ?? 'A');
+        $endCol       = strtoupper($this->option('end-col') ?? 'Z');
         $firstDataRow = $headerRow + 1;
+
+        $this->info("Using header row: {$headerRow}, columns: {$startCol} to {$endCol}, data starts at row: {$firstDataRow}");
 
         // Start controls
         $requestedStart = $this->option('start-row') ? (int)$this->option('start-row') : null;
@@ -114,8 +151,28 @@ class ImportRegistrations extends Command
         $inserted = 0;
         $skippedEmpty = 0;
         $skippedExistingCount = 0;
+        $skippedDuplicateName = 0;
+        $attachedToEvent = 0;
         $failed = 0;
         $failSamples = [];
+        $dryRun = (bool)$this->option('dry-run');
+
+        if ($dryRun) {
+            $this->warn("DRY RUN MODE - No data will be saved to database");
+            $this->warn("\n=== EXCEL HEADERS FOUND ===");
+            $this->line("Raw headers from Excel:");
+            foreach ($rawHeaders as $i => $header) {
+                $norm = $this->normHeader($header);
+                $matched = isset($this->map[$norm]) ? "✓ MAPPED to: {$this->map[$norm]}" : "✗ NOT MAPPED";
+                $this->line("  [{$i}] '{$header}' → normalized: '{$norm}' → {$matched}");
+            }
+            $this->warn("\n=== EXPECTED HEADERS (from map) ===");
+            foreach ($this->map as $expectedNorm => $field) {
+                $found = isset($nidx[$expectedNorm]) ? "✓ FOUND at column {$nidx[$expectedNorm]}" : "✗ MISSING";
+                $this->line("  '{$expectedNorm}' ({$field}) → {$found}");
+            }
+            $this->line("");
+        }
 
         $this->info("Processing rows {$startRow}..{$lastRow} from '{$realName}'");
 
@@ -150,7 +207,8 @@ class ImportRegistrations extends Command
 
                 // Case 1: multi-select cell
                 if (!empty($payload['spheres_raw'])) {
-                    $sphereLabels = preg_split('/[;,|\n]+/', (string)$payload['spheres_raw']);
+                    // Split by semicolon, comma, pipe, newline, or " or "
+                    $sphereLabels = preg_split('/[;,|\n]+|\s+or\s+/i', (string)$payload['spheres_raw']);
                     $sphereLabels = array_values(array_filter(array_map('trim', $sphereLabels)));
                 }
 
@@ -171,6 +229,37 @@ class ImportRegistrations extends Command
 
                 // Deduplicate labels (preserve order)
                 $sphereLabels = array_values(array_unique($sphereLabels));
+
+                // Check if user with same first name + last name already exists
+                $firstName = trim((string)($payload['first_name'] ?? ''));
+                $lastName = trim((string)($payload['last_name'] ?? ''));
+
+                $existingUser = null;
+                if (!empty($firstName) && !empty($lastName)) {
+                    $existingUser = User::whereRaw('LOWER(TRIM(first_name)) = ? AND LOWER(TRIM(last_name)) = ?', [
+                        mb_strtolower($firstName),
+                        mb_strtolower($lastName)
+                    ])->first();
+
+                    if ($existingUser) {
+                        $skippedDuplicateName++;
+
+                        // Still attach to event if event-id is provided
+                        if ($event) {
+                            $wasAlreadyAttached = $event->users()->where('users.id', $existingUser->id)->exists();
+                            if (!$wasAlreadyAttached) {
+                                $event->users()->syncWithoutDetaching([$existingUser->id]);
+                                $attachedToEvent++;
+                                $this->info("Row {$row}: User {$firstName} {$lastName} (ID: {$existingUser->id}) already exists - attached to event");
+                            } else {
+                                $this->line("Row {$row}: User {$firstName} {$lastName} (ID: {$existingUser->id}) already exists and already attached to event");
+                            }
+                        } else {
+                            $this->warn("Row {$row}: Skipped duplicate - {$firstName} {$lastName} already exists (User ID: {$existingUser->id})");
+                        }
+                        continue;
+                    }
+                }
 
                 // Group (optional)
                 $groupId = null;
@@ -223,11 +312,35 @@ class ImportRegistrations extends Command
                 }
                 $user->vocation_work_sphere = !empty($sphereIds) ? implode(', ', $sphereIds) : null;
 
+                // Dry run preview
+                if ($dryRun) {
+                    if ($inserted < 5) { // Show first 5 records as preview
+                        $this->line("\n--- Row {$row} Preview ---");
+                        $this->line("Name: {$user->first_name} {$user->last_name}");
+                        $this->line("Email: {$user->email}");
+                        $this->line("Mobile: {$user->mobile_number}");
+                        $this->line("Church: {$user->church_name}");
+                        $this->line("Group: " . ($groupId ? $payload['group_name'] : 'None'));
+                        $this->line("Spheres: " . (!empty($sphereLabels) ? implode(', ', $sphereLabels) : 'None'));
+                        if ($event) {
+                            $this->line("Will attach to event: {$event->name}");
+                        }
+                    }
+                    $inserted++;
+                    continue; // Skip actual save in dry-run mode
+                }
+
                 $user->save();
 
                 // Attach sphere IDs through pivot
                 if (!empty($sphereIds)) {
                     $user->spheres()->syncWithoutDetaching($sphereIds);
+                }
+
+                // Attach user to event if event-id was provided
+                if ($event) {
+                    $event->users()->syncWithoutDetaching([$user->id]);
+                    $attachedToEvent++;
                 }
 
                 $inserted++;
@@ -239,7 +352,20 @@ class ImportRegistrations extends Command
             }
         }
 
-        $this->info("Done. Inserted={$inserted}, skipped_blank_rows={$skippedEmpty}, skipped_existing={$skippedExistingCount}, failed={$failed}");
+        if ($dryRun) {
+            $this->warn("\nDRY RUN COMPLETE - No data was saved");
+            $this->info("Would have inserted: {$inserted} users");
+            if ($event) {
+                $this->info("Would have attached {$inserted} users to event: {$event->name}");
+            }
+        } else {
+            $this->info("Done. Inserted={$inserted}, skipped_blank_rows={$skippedEmpty}, skipped_existing={$skippedExistingCount}, skipped_duplicate_names={$skippedDuplicateName}, failed={$failed}");
+
+            if ($event) {
+                $this->info("Attached {$attachedToEvent} users to event: {$event->name} (ID: {$event->id})");
+            }
+        }
+
         return self::SUCCESS;
     }
 

@@ -234,8 +234,19 @@ class ImportRegistrations extends Command
                 $firstName = trim((string)($payload['first_name'] ?? ''));
                 $lastName = trim((string)($payload['last_name'] ?? ''));
 
+                // Set to "N/A" if either name is missing
+                if (empty($firstName)) {
+                    $firstName = 'N/A';
+                    $payload['first_name'] = 'N/A';
+                }
+                if (empty($lastName)) {
+                    $lastName = 'N/A';
+                    $payload['last_name'] = 'N/A';
+                }
+
                 $existingUser = null;
-                if (!empty($firstName) && !empty($lastName)) {
+                // Only check for duplicates if both names are not N/A
+                if ($firstName !== 'N/A' && $lastName !== 'N/A') {
                     $existingUser = User::whereRaw('LOWER(TRIM(first_name)) = ? AND LOWER(TRIM(last_name)) = ?', [
                         mb_strtolower($firstName),
                         mb_strtolower($lastName)

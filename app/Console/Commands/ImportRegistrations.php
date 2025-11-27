@@ -22,6 +22,7 @@ class ImportRegistrations extends Command
         {--resume : Continue from the last imported row in users for this sheet}
         {--skip-existing : Skip rows already imported for this sheet (by source_row)}
         {--event-id= : Event ID to attach imported registrants as attendees}
+        {--interactive-map : Interactively map Excel columns to database fields}
         {--dry-run : Preview what would be imported without actually saving to database}';
 
     protected $description = 'Insert every row from the Excel into users; store Google Drive link only (no downloads).';
@@ -147,12 +148,49 @@ class ImportRegistrations extends Command
             if ($norm !== '') $nidx[$norm] = $col;
         }
 
+        // Interactive mapping if requested
+        if ($this->option('interactive-map')) {
+            $this->map = $this->interactiveMapping($rawHeaders, $nidx);
+            $this->info("\n✓ Custom mapping applied\n");
+        }
+
+        // Show mapping preview and confirm before proceeding
+        $this->warn("\n=== COLUMN MAPPING PREVIEW ===");
+        $mappedCount = 0;
+        $unmappedCount = 0;
+
+        foreach ($rawHeaders as $i => $header) {
+            if (trim($header) === '') continue;
+            $norm = $this->normHeader($header);
+            if ($norm === '') continue;
+
+            if (isset($this->map[$norm])) {
+                $this->info("  ✓ '{$header}' → {$this->map[$norm]}");
+                $mappedCount++;
+            } else {
+                $this->line("  ✗ '{$header}' → (not mapped, will be skipped)");
+                $unmappedCount++;
+            }
+        }
+
+        $this->line("\nSummary: {$mappedCount} columns mapped, {$unmappedCount} columns will be skipped");
+
+        if (!$this->option('dry-run')) {
+            $confirm = $this->confirm("\nProceed with import using this mapping?", true);
+            if (!$confirm) {
+                $this->warn("Import cancelled by user");
+                return self::SUCCESS;
+            }
+        }
+
         $lastRow = $sheet->getHighestRow();
         $inserted = 0;
         $skippedEmpty = 0;
         $skippedExistingCount = 0;
         $skippedDuplicateName = 0;
         $attachedToEvent = 0;
+        $updated = 0;
+        $skippedUnchanged = 0;
         $failed = 0;
         $failSamples = [];
         $dryRun = (bool)$this->option('dry-run');
@@ -230,6 +268,22 @@ class ImportRegistrations extends Command
                 // Deduplicate labels (preserve order)
                 $sphereLabels = array_values(array_unique($sphereLabels));
 
+                // Find sphere IDs from labels (do this before duplicate check so we can compare)
+                $sphereIds = [];
+                if (!empty($sphereLabels)) {
+                    foreach ($sphereLabels as $label) {
+                        $slug = Str::slug($label, '-');
+                        $normLabel = preg_replace('/\s+/', ' ', mb_strtolower($label));
+                        $sphere = Sphere::where('slug', $slug)->first();
+                        if (!$sphere) {
+                            $sphere = Sphere::whereRaw('LOWER(name) = ?', [$normLabel])->first();
+                        }
+                        if ($sphere) {
+                            $sphereIds[] = $sphere->id;
+                        }
+                    }
+                }
+
                 // Check if user with same first name + last name already exists
                 $firstName = trim((string)($payload['first_name'] ?? ''));
                 $lastName = trim((string)($payload['last_name'] ?? ''));
@@ -253,21 +307,130 @@ class ImportRegistrations extends Command
                     ])->first();
 
                     if ($existingUser) {
-                        $skippedDuplicateName++;
+                        // Compare key fields to detect changes
+                        $hasChanges = false;
+                        $changes = [];
+
+                        // Compare fields (skip null/empty comparisons)
+                        $fieldsToCompare = [
+                            'email',
+                            'title',
+                            'middle_initial',
+                            'mobile_number',
+                            'home_address',
+                            'church_name',
+                            'church_address',
+                            'mode_of_payment',
+                            'proof_of_payment_url',
+                            'notes',
+                            'reference_number'
+                        ];
+
+                        foreach ($fieldsToCompare as $field) {
+                            $newValue = isset($payload[$field]) ? trim((string)$payload[$field]) : '';
+                            $oldValue = isset($existingUser->$field) ? trim((string)$existingUser->$field) : '';
+
+                            // Only consider it a change if new value is not empty and differs from old
+                            if ($newValue !== '' && $newValue !== $oldValue) {
+                                $hasChanges = true;
+                                $changes[] = $field;
+                            }
+                        }
+
+                        // Compare normalized enums
+                        $newWorkingStudent = $this->normalizeWorkingStudent($payload['working_or_student'] ?? null);
+                        if ($newWorkingStudent && $newWorkingStudent !== $existingUser->working_or_student) {
+                            $hasChanges = true;
+                            $changes[] = 'working_or_student';
+                        }
+
+                        $newModeOfPayment = $this->normalizeModeOfPayment($payload['mode_of_payment'] ?? null);
+                        if ($newModeOfPayment && $newModeOfPayment !== $existingUser->mode_of_payment) {
+                            $hasChanges = true;
+                            $changes[] = 'mode_of_payment';
+                        }
+
+                        // Compare boolean flags
+                        foreach (['reconciled', 'finance_checked', 'email_confirmed', 'attendance', 'id_issued', 'book_given'] as $flag) {
+                            $newFlag = (bool)($payload[$flag] ?? false);
+                            $oldFlag = (bool)$existingUser->$flag;
+                            if ($newFlag !== $oldFlag) {
+                                $hasChanges = true;
+                                $changes[] = $flag;
+                            }
+                        }
+
+                        // Compare spheres
+                        $existingSphereIds = $existingUser->spheres->pluck('id')->toArray();
+                        sort($existingSphereIds);
+                        $newSphereIds = $sphereIds;
+                        sort($newSphereIds);
+                        if ($existingSphereIds !== $newSphereIds) {
+                            $hasChanges = true;
+                            $changes[] = 'spheres';
+                        }
+
+                        if ($hasChanges) {
+                            // Update the existing user
+                            if (!$dryRun) {
+                                $existingUser->email = $payload['email'] ?? $existingUser->email;
+                                $existingUser->title = $payload['title'] ?? $existingUser->title;
+                                $existingUser->middle_initial = $payload['middle_initial'] ?? $existingUser->middle_initial;
+                                $existingUser->mobile_number = $payload['mobile_number'] ?? $existingUser->mobile_number;
+                                $existingUser->home_address = $payload['home_address'] ?? $existingUser->home_address;
+                                $existingUser->church_name = $payload['church_name'] ?? $existingUser->church_name;
+                                $existingUser->church_address = $payload['church_address'] ?? $existingUser->church_address;
+                                if ($newWorkingStudent) $existingUser->working_or_student = $newWorkingStudent;
+                                if ($newModeOfPayment) $existingUser->mode_of_payment = $newModeOfPayment;
+                                $existingUser->proof_of_payment_url = $payload['proof_of_payment_url'] ?? $existingUser->proof_of_payment_url;
+                                $existingUser->notes = $payload['notes'] ?? $existingUser->notes;
+                                $existingUser->reference_number = $payload['reference_number'] ?? $existingUser->reference_number;
+                                $existingUser->reconciled = (bool)($payload['reconciled'] ?? $existingUser->reconciled);
+                                $existingUser->finance_checked = (bool)($payload['finance_checked'] ?? $existingUser->finance_checked);
+                                $existingUser->email_confirmed = (bool)($payload['email_confirmed'] ?? $existingUser->email_confirmed);
+                                $existingUser->attendance = (bool)($payload['attendance'] ?? $existingUser->attendance);
+                                $existingUser->id_issued = (bool)($payload['id_issued'] ?? $existingUser->id_issued);
+                                $existingUser->book_given = (bool)($payload['book_given'] ?? $existingUser->book_given);
+
+                                // Update group if provided
+                                if (!empty($payload['group_name'])) {
+                                    $group = Group::firstOrCreate(
+                                        ['name' => trim((string)$payload['group_name'])],
+                                        ['type' => null, 'description' => null]
+                                    );
+                                    $existingUser->group_id = $group->id;
+                                }
+
+                                $existingUser->save();
+
+                                // Update spheres
+                                if (!empty($sphereIds)) {
+                                    $existingUser->spheres()->sync($sphereIds);
+                                }
+                            }
+
+                            $updated++;
+                            $this->info("Row {$row}: Updated {$firstName} {$lastName} (ID: {$existingUser->id}) - changed: " . implode(', ', $changes));
+                        } else {
+                            // No changes detected
+                            $skippedUnchanged++;
+                            if ($skippedUnchanged <= 5 || $skippedUnchanged % 50 === 0) {
+                                $this->line("Row {$row}: Skipped unchanged - {$firstName} {$lastName} (ID: {$existingUser->id})");
+                            }
+                        }
 
                         // Still attach to event if event-id is provided
                         if ($event) {
                             $wasAlreadyAttached = $event->users()->where('users.id', $existingUser->id)->exists();
                             if (!$wasAlreadyAttached) {
-                                $event->users()->syncWithoutDetaching([$existingUser->id]);
+                                if (!$dryRun) {
+                                    $event->users()->syncWithoutDetaching([$existingUser->id]);
+                                }
                                 $attachedToEvent++;
-                                $this->info("Row {$row}: User {$firstName} {$lastName} (ID: {$existingUser->id}) already exists - attached to event");
-                            } else {
-                                $this->line("Row {$row}: User {$firstName} {$lastName} (ID: {$existingUser->id}) already exists and already attached to event");
+                                $this->info("Row {$row}: Attached {$firstName} {$lastName} (ID: {$existingUser->id}) to event");
                             }
-                        } else {
-                            $this->warn("Row {$row}: Skipped duplicate - {$firstName} {$lastName} already exists (User ID: {$existingUser->id})");
                         }
+
                         continue;
                     }
                 }
@@ -306,21 +469,7 @@ class ImportRegistrations extends Command
                 $user->id_issued              = (bool)($payload['id_issued'] ?? false);
                 $user->book_given             = (bool)($payload['book_given'] ?? false);
 
-                // Find sphere IDs and store them as comma-separated IDs instead of names
-                $sphereIds = [];
-                if (!empty($sphereLabels)) {
-                    foreach ($sphereLabels as $label) {
-                        $slug = Str::slug($label, '-');
-                        $normLabel = preg_replace('/\s+/', ' ', mb_strtolower($label));
-                        $sphere = Sphere::where('slug', $slug)->first();
-                        if (!$sphere) {
-                            $sphere = Sphere::whereRaw('LOWER(name) = ?', [$normLabel])->first();
-                        }
-                        if ($sphere) {
-                            $sphereIds[] = $sphere->id;
-                        }
-                    }
-                }
+                // Store sphere IDs as comma-separated (already computed above)
                 $user->vocation_work_sphere = !empty($sphereIds) ? implode(', ', $sphereIds) : null;
 
                 // Dry run preview
@@ -366,14 +515,22 @@ class ImportRegistrations extends Command
         if ($dryRun) {
             $this->warn("\nDRY RUN COMPLETE - No data was saved");
             $this->info("Would have inserted: {$inserted} users");
+            $this->info("Would have updated: {$updated} users");
+            $this->info("Would have skipped (unchanged): {$skippedUnchanged} users");
             if ($event) {
-                $this->info("Would have attached {$inserted} users to event: {$event->name}");
+                $this->info("Would have attached {$attachedToEvent} users to event: {$event->name}");
             }
         } else {
-            $this->info("Done. Inserted={$inserted}, skipped_blank_rows={$skippedEmpty}, skipped_existing={$skippedExistingCount}, skipped_duplicate_names={$skippedDuplicateName}, failed={$failed}");
+            $this->info("\nDone. Summary:");
+            $this->info("  Inserted (new): {$inserted}");
+            $this->info("  Updated (changed): {$updated}");
+            $this->info("  Skipped (unchanged): {$skippedUnchanged}");
+            $this->info("  Skipped (blank rows): {$skippedEmpty}");
+            $this->info("  Skipped (existing rows by number): {$skippedExistingCount}");
+            $this->info("  Failed: {$failed}");
 
             if ($event) {
-                $this->info("Attached {$attachedToEvent} users to event: {$event->name} (ID: {$event->id})");
+                $this->info("  Attached to event '{$event->name}': {$attachedToEvent} users");
             }
         }
 
@@ -444,5 +601,136 @@ class ImportRegistrations extends Command
             $num = intdiv($num - 1, 26);
         }
         return $s;
+    }
+
+    /**
+     * Interactive column mapping interface
+     */
+    private function interactiveMapping(array $rawHeaders, array $nidx): array
+    {
+        $this->warn("\n=== INTERACTIVE COLUMN MAPPING ===");
+        $this->info("Map each Excel column to a database field.\n");
+
+        $availableFields = $this->getAvailableFields();
+        $customMap = [];
+
+        // Show all Excel columns with their normalized keys
+        $excelColumns = [];
+        foreach ($rawHeaders as $i => $header) {
+            if (trim($header) === '') continue;
+            $norm = $this->normHeader($header);
+            if ($norm !== '' && isset($nidx[$norm])) {
+                $excelColumns[] = [
+                    'raw' => $header,
+                    'normalized' => $norm,
+                    'column' => $nidx[$norm]
+                ];
+            }
+        }
+
+        $this->info("Found " . count($excelColumns) . " columns in Excel:\n");
+
+        foreach ($excelColumns as $idx => $col) {
+            $this->line("\n[" . ($idx + 1) . "/" . count($excelColumns) . "] Excel Column: '{$col['raw']}'");
+            $this->line("    Column Letter: {$col['column']}");
+
+            // Check if there's a default mapping
+            $defaultField = $this->map[$col['normalized']] ?? null;
+            if ($defaultField) {
+                $this->info("    Default mapping → {$defaultField}");
+            }
+
+            // Show available fields
+            $this->line("\n    Available database fields:");
+            foreach ($availableFields as $num => $field) {
+                $marker = ($defaultField === $field['value']) ? ' ← (default)' : '';
+                $this->line("      [{$num}] {$field['label']}{$marker}");
+            }
+            $this->line("      [0] Skip this column");
+            if ($defaultField) {
+                $this->line("      [Enter] Use default ({$defaultField})");
+            }
+
+            $choice = $this->ask("    Your choice", $defaultField ? '' : '0');
+
+            // Handle default (empty input)
+            if ($choice === '' && $defaultField) {
+                $customMap[$col['normalized']] = $defaultField;
+                $this->info("    ✓ Mapped to: {$defaultField}");
+                continue;
+            }
+
+            // Handle skip
+            if ($choice === '0') {
+                $this->line("    ⊘ Skipped");
+                continue;
+            }
+
+            // Handle numeric choice
+            if (is_numeric($choice) && isset($availableFields[(int)$choice])) {
+                $selectedField = $availableFields[(int)$choice]['value'];
+                $customMap[$col['normalized']] = $selectedField;
+                $this->info("    ✓ Mapped to: {$selectedField}");
+                continue;
+            }
+
+            // Handle direct field name input
+            $fieldNames = array_column($availableFields, 'value');
+            if (in_array($choice, $fieldNames)) {
+                $customMap[$col['normalized']] = $choice;
+                $this->info("    ✓ Mapped to: {$choice}");
+                continue;
+            }
+
+            // Invalid choice - skip
+            $this->warn("    Invalid choice - skipping this column");
+        }
+
+        $this->line("\n=== MAPPING SUMMARY ===");
+        $mappedCount = count($customMap);
+        $skippedCount = count($excelColumns) - $mappedCount;
+        $this->info("Mapped: {$mappedCount} columns");
+        $this->line("Skipped: {$skippedCount} columns");
+
+        if ($mappedCount > 0) {
+            $this->line("\nFinal mappings:");
+            foreach ($customMap as $norm => $field) {
+                $this->line("  '{$norm}' → {$field}");
+            }
+        }
+
+        return $customMap;
+    }
+
+    /**
+     * Get available database fields for mapping
+     */
+    private function getAvailableFields(): array
+    {
+        return [
+            1 => ['value' => 'email', 'label' => 'email - Email Address'],
+            2 => ['value' => 'title', 'label' => 'title - Title (Mr/Ms/Dr)'],
+            3 => ['value' => 'first_name', 'label' => 'first_name - First Name'],
+            4 => ['value' => 'last_name', 'label' => 'last_name - Last Name'],
+            5 => ['value' => 'middle_initial', 'label' => 'middle_initial - Middle Initial'],
+            6 => ['value' => 'mobile_number', 'label' => 'mobile_number - Mobile Number'],
+            7 => ['value' => 'home_address', 'label' => 'home_address - Home Address'],
+            8 => ['value' => 'church_name', 'label' => 'church_name - Church Name'],
+            9 => ['value' => 'church_address', 'label' => 'church_address - Church Address'],
+            10 => ['value' => 'working_or_student', 'label' => 'working_or_student - Working or Student'],
+            11 => ['value' => 'spheres_raw', 'label' => 'spheres_raw - Vocation/Work Sphere(s)'],
+            12 => ['value' => 'mode_of_payment', 'label' => 'mode_of_payment - Mode of Payment'],
+            13 => ['value' => 'proof_of_payment_url', 'label' => 'proof_of_payment_url - Proof of Payment Link'],
+            14 => ['value' => 'notes', 'label' => 'notes - Notes'],
+            15 => ['value' => 'group_name', 'label' => 'group_name - Group Name'],
+            16 => ['value' => 'reference_number', 'label' => 'reference_number - Reference Number'],
+            17 => ['value' => 'reconciled', 'label' => 'reconciled - Reconciled (boolean)'],
+            18 => ['value' => 'finance_checked', 'label' => 'finance_checked - Finance Checked (boolean)'],
+            19 => ['value' => 'email_confirmed', 'label' => 'email_confirmed - Email Confirmed (boolean)'],
+            20 => ['value' => 'attendance', 'label' => 'attendance - Attendance (boolean)'],
+            21 => ['value' => 'id_issued', 'label' => 'id_issued - ID Issued (boolean)'],
+            22 => ['value' => 'book_given', 'label' => 'book_given - Book Given (boolean)'],
+            23 => ['value' => 'age_range', 'label' => 'age_range - Age Range'],
+        ];
     }
 }

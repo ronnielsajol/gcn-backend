@@ -11,34 +11,73 @@ class StatsController extends Controller
 {
     public function getSphereStatsPerEvent(Event $event)
     {
-        // Get users with spheres (only role: user)
-        $sphereStats = DB::table('users')
-            ->join('event_user', 'users.id', '=', 'event_user.user_id')
-            ->join('user_sphere', 'users.id', '=', 'user_sphere.user_id')
-            ->join('spheres', 'user_sphere.sphere_id', '=', 'spheres.id')
-            ->where('event_user.event_id', $event->id)
-            ->where('users.role', 'user')
-            ->select(
-                'spheres.id as sphere_id',
-                'spheres.name as sphere_name',
-                'spheres.slug as sphere_slug',
-                DB::raw('COUNT(DISTINCT users.id) as user_count')
-            )
-            ->groupBy('spheres.id', 'spheres.name', 'spheres.slug')
-            ->orderBy('spheres.name')
-            ->get();
-
-        // Get total unique users in the event (only role: user)
-        $totalUsers = $event->users()->where('role', 'user')->count();
-
-        // Get count of users with no sphere assignments (null spheres, only role: user)
-        $usersWithoutSpheres = DB::table('users')
+        // Get all users in the event (only role: user) with their spheres
+        $usersWithSpheres = DB::table('users')
             ->join('event_user', 'users.id', '=', 'event_user.user_id')
             ->leftJoin('user_sphere', 'users.id', '=', 'user_sphere.user_id')
             ->where('event_user.event_id', $event->id)
             ->where('users.role', 'user')
-            ->whereNull('user_sphere.user_id')
-            ->count();
+            ->select('users.id', 'user_sphere.sphere_id')
+            ->orderBy('users.id')
+            ->orderBy('user_sphere.sphere_id')
+            ->get();
+
+        // Group spheres by user
+        $userSpheres = $usersWithSpheres->groupBy('id');
+
+        // Determine primary sphere for each user
+        $primarySpheres = [];
+        foreach ($userSpheres as $userId => $spheres) {
+            $sphereIds = $spheres->pluck('sphere_id')->filter()->values()->toArray();
+
+            if (empty($sphereIds)) {
+                // User has no spheres
+                $primarySpheres[$userId] = null;
+            } elseif (count($sphereIds) === 1) {
+                // User has only 1 sphere
+                $primarySpheres[$userId] = $sphereIds[0];
+            } else {
+                // User has multiple spheres
+                // If first sphere is 1 (Church/Ministry), take the second one
+                if ($sphereIds[0] == 1 && isset($sphereIds[1])) {
+                    $primarySpheres[$userId] = $sphereIds[1];
+                } else {
+                    $primarySpheres[$userId] = $sphereIds[0];
+                }
+            }
+        }
+
+        // Count users per sphere
+        $sphereCounts = [];
+        foreach ($primarySpheres as $userId => $sphereId) {
+            if ($sphereId !== null) {
+                if (!isset($sphereCounts[$sphereId])) {
+                    $sphereCounts[$sphereId] = 0;
+                }
+                $sphereCounts[$sphereId]++;
+            }
+        }
+
+        // Get sphere details
+        $sphereStats = DB::table('spheres')
+            ->whereIn('id', array_keys($sphereCounts))
+            ->get()
+            ->map(function ($sphere) use ($sphereCounts) {
+                return (object)[
+                    'sphere_id' => $sphere->id,
+                    'sphere_name' => $sphere->name,
+                    'sphere_slug' => $sphere->slug,
+                    'user_count' => $sphereCounts[$sphere->id],
+                ];
+            })
+            ->sortBy('sphere_name')
+            ->values();
+
+        // Get total unique users in the event (only role: user)
+        $totalUsers = $event->users()->where('role', 'user')->count();
+
+        // Count users without spheres
+        $usersWithoutSpheres = count(array_filter($primarySpheres, fn($sphereId) => $sphereId === null));
 
         // Add "Others" category for users without spheres
         if ($usersWithoutSpheres > 0) {

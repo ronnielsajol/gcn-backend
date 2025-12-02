@@ -11,12 +11,13 @@ class StatsController extends Controller
 {
     public function getSphereStatsPerEvent(Event $event)
     {
-        // Get all users in the event (only role: user) with their spheres
+        // Get all users in the event (only role: user, attendance = 1) with their spheres
         $usersWithSpheres = DB::table('users')
             ->join('event_user', 'users.id', '=', 'event_user.user_id')
             ->leftJoin('user_sphere', 'users.id', '=', 'user_sphere.user_id')
             ->where('event_user.event_id', $event->id)
             ->where('users.role', 'user')
+            ->where('users.attendance', 1)
             ->select('users.id', 'user_sphere.sphere_id')
             ->orderBy('users.id')
             ->orderBy('user_sphere.sphere_id')
@@ -73,8 +74,8 @@ class StatsController extends Controller
             ->sortBy('sphere_name')
             ->values();
 
-        // Get total unique users in the event (only role: user)
-        $totalUsers = $event->users()->where('role', 'user')->count();
+        // Get total unique users in the event (only role: user, attendance = 1)
+        $totalUsers = $event->users()->where('role', 'user')->where('attendance', 1)->count();
 
         // Count users without spheres
         $usersWithoutSpheres = count(array_filter($primarySpheres, fn($sphereId) => $sphereId === null));

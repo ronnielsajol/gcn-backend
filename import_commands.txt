@@ -1,0 +1,5 @@
+php artisan import:registrations "Clark_TN_2025.xlsx" --header-row=1 --start-col=A --end-col=Z --event-id=3 --interactive-map --sheet="Overall Delegates" --dry-run
+
+php artisan import:registrations "Clark_TN_2024.xlsx" --header-row=1 --start-col=A --end-col=Z --event-id=1 --interactive-map --dry-run
+
+php artisan import:event-registrations "storage/app/imports/GCN.xlsx" --day1-event-id=4 --day2-event-id=5 --day3-event-id=6 --dry-run
